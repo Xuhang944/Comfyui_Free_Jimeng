@@ -10,22 +10,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TokenManager:
-    def __init__(self, config):
+    def __init__(self, config, sessionid=None):
         self.config = config
-        self.accounts = config.get("accounts", [])
-        self.current_account_index = 0
         self.version_code = "5.8.0"
         self.platform_code = "7"
         self.device_id = str(random.random() * 999999999999999999 + 7000000000000000000)
         self.web_id = str(random.random() * 999999999999999999 + 7000000000000000000)
         self.user_id = str(random.random() * 999999999999999999 + 7000000000000000000) # Changed to generate a random user_id
         
-        logger.info(f"[Jimeng] Initialized with {len(self.accounts)} accounts")
+        # 只支持直接输入sessionid
+        if not sessionid:
+            logger.warning(f"[Jimeng] TokenManager initialized without sessionid")
+            sessionid = ""
         
-        # 初始化时为每个账号生成一个web_id
-        for account in self.accounts:
-            if not hasattr(account, 'web_id'):
-                account['web_id'] = self._generate_web_id()
+        logger.info(f"[Jimeng] Initialized with sessionid")
+        
+        # 创建一个临时账号用于动态sessionid
+        self.dynamic_account = {
+            "sessionid": sessionid,
+            "web_id": self._generate_web_id()
+        }
         
         self._extract_web_id_from_cookie()
         
@@ -41,13 +45,15 @@ class TokenManager:
                 return
                 
             # 如果账号已有web_id，直接使用
-            if account.get('web_id'):
+            if isinstance(account, dict) and account.get('web_id'):
                 self.web_id = account['web_id']
                 return
                 
             # 否则生成新的web_id
-            account['web_id'] = self._generate_web_id()
-            self.web_id = account['web_id']
+            web_id = self._generate_web_id()
+            if isinstance(account, dict):
+                account['web_id'] = web_id
+            self.web_id = web_id
             
         except Exception as e:
             logger.error(f"[Jimeng] Failed to extract web_id from cookie: {e}")
@@ -68,43 +74,21 @@ class TokenManager:
         
     def get_current_account(self):
         """获取当前账号"""
-        if not self.accounts:
-            return None
-        return self.accounts[self.current_account_index]
+        return self.dynamic_account
         
     def switch_to_account(self, account_index):
-        """切换到指定账号"""
-        if not self.accounts:
-            raise Exception("No accounts configured")
-        if account_index < 0 or account_index >= len(self.accounts):
-            logger.error(f"[Jimeng] Invalid account index: {account_index}, total accounts: {len(self.accounts)}")
-            return None
-        self.current_account_index = account_index
-        logger.info(f"[Jimeng] Switched to account {account_index + 1}")
-        return self.get_current_account()
+        """切换到指定账号 - 已废弃"""
+        logger.warning(f"[Jimeng] switch_to_account is deprecated, only single sessionid is supported")
+        return self.dynamic_account
         
     def get_account_count(self):
-        """获取账号总数"""
-        return len(self.accounts)
+        """获取账号总数 - 已废弃"""
+        return 1
 
     def find_account_with_sufficient_credit(self, required_credit):
-        """查找有足够积分的账号"""
-        original_index = self.current_account_index
-        
-        # 检查所有账号
-        for i in range(len(self.accounts)):
-            credit_info = self.get_credit()
-            if credit_info and credit_info["total_credit"] >= required_credit:
-                logger.info(f"[Jimeng] Found account with sufficient credit: {credit_info['total_credit']}")
-                return self.get_current_account()
-            
-            # 切换到下一个账号
-            next_index = (self.current_account_index + 1) % len(self.accounts)
-            self.switch_to_account(next_index)
-        
-        # 如果没有找到合适的账号，恢复原始账号
-        self.switch_to_account(original_index)
-        return None
+        """查找有足够积分的账号 - 已废弃"""
+        # 直接返回当前账号，由API调用时检查积分
+        return self.dynamic_account
 
     def get_token(self, api_path="/"):
         """获取token信息
@@ -259,7 +243,7 @@ class TokenManager:
             
             if result.get("ret") == "0" and result.get("data"):
                 credit_data = result["data"]["credit"]
-                logger.info(f"[Jimeng] Credit info for account {self.current_account_index + 1}: gift={credit_data['gift_credit']}, purchase={credit_data['purchase_credit']}, vip={credit_data['vip_credit']}")
+                logger.info(f"[Jimeng] Credit info: gift={credit_data['gift_credit']}, purchase={credit_data['purchase_credit']}, vip={credit_data['vip_credit']}")
                 return {
                     "gift_credit": credit_data["gift_credit"],
                     "purchase_credit": credit_data["purchase_credit"],

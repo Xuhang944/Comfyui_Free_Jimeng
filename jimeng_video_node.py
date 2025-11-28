@@ -62,15 +62,6 @@ class JimengVideoNode:
             logger.error(f"[JimengVideoNode] 配置文件加载失败: {e}")
             return {}
 
-    def _is_configured(self) -> bool:
-        """
-        检查配置是否包含至少一个有效的sessionid。
-        """
-        accounts = self.config.get("accounts", [])
-        if not isinstance(accounts, list) or not accounts:
-            return False
-        return any(acc.get("sessionid") for acc in accounts)
-
     def _initialize_components(self):
         """
         基于加载的配置初始化TokenManager和ApiClient。
@@ -98,25 +89,30 @@ class JimengVideoNode:
                 config = json.load(f)
         except Exception:
             config = {}
+        
         # 视频模型
         video_models = config.get("video_models", {})
         model_options = [(k, v.get("name", k)) for k, v in video_models.items()]
         model_keys = [k for k, _ in model_options]
         model_names = [v for _, v in model_options]
         default_model = config.get("default_video_model", model_keys[0] if model_keys else "s2.0")
+        
         # 比例
         video_ratios = config.get("video_ratios", {})
         ratio_options = list(video_ratios.keys())
         default_ratio = config.get("default_video_ratio", ratio_options[0] if ratio_options else "16:9")
+        
         # 时长（前端以秒为单位，后端自动转毫秒）
         duration_options = [5, 10]
         default_duration = 5
+        
         return {
             "required": {
                 "prompt": ("STRING", {"multiline": True, "default": "描述你想要的视频"}),
                 "video_model": (model_keys, {"default": default_model, "display_names": model_names, "tooltip": "选择视频生成模型"}),
                 "video_ratio": (ratio_options, {"default": default_ratio, "tooltip": "选择视频比例"}),
                 "duration": (duration_options, {"default": default_duration, "display_names": [f"{x}秒" for x in duration_options], "tooltip": "选择视频时长（秒）"}),
+                "sessionid": ("STRING", {"multiline": False, "default": "", "placeholder": "请输入即梦AI的sessionid"}),
             },
             "optional": {
                 "first_frame_image": ("IMAGE", {"tooltip": "可选，首帧图片，留空为文生视频"}),
@@ -192,17 +188,35 @@ class JimengVideoNode:
         logger.info(f"  - 时长：{duration // 1000}秒")
         logger.info(f"  - 账号web_id：{web_id}")
 
-    def generate_video(self, prompt: str, video_model: str, video_ratio: str, duration: int, first_frame_image: torch.Tensor = None, end_frame_image: torch.Tensor = None) -> Tuple[str, str]:
+    def generate_video(self, prompt: str, video_model: str, video_ratio: str, duration: int, sessionid: str, first_frame_image: torch.Tensor = None, end_frame_image: torch.Tensor = None) -> Tuple[str, str]:
         try:
+            # --- 1. 动态初始化组件 ---
+            # 清理前后空格
+            sessionid = sessionid.strip()
+            
+            # 检查sessionid是否为空
+            if not sessionid:
+                return ("错误: sessionid不能为空，请输入有效的sessionid。", "")
+            
+            # 重新初始化TokenManager和ApiClient，支持动态sessionid
+            try:
+                self.token_manager = TokenManager(self.config, sessionid=sessionid)
+                self.api_client = ApiClient(self.token_manager, self.config)
+                logger.info(f"[JimengVideoNode] 已动态初始化核心组件")
+            except Exception as e:
+                return (f"错误: 动态初始化核心组件失败: {e}", "")
+            
+            # --- 2. 通用检查 ---
             if not self.token_manager or not self.api_client:
                 return ("错误: 插件未正确初始化，请检查后台日志。", "")
-            if not self._is_configured():
-                return ("错误: 插件未配置，请在 config.json 中至少填入一个账号的 sessionid。", "")
+            
             if not prompt or not prompt.strip():
                 return ("错误: 提示词不能为空。", "")
 
+            logger.info(f"[JimengVideoNode] 使用直接输入的sessionid")
+
             duration_ms = duration * 1000  # 前端为秒，后端转为毫秒
-            account_number = self.token_manager.current_account_index + 1 if self.token_manager else 1
+            account_number = 1  # 固定为1，因为只支持单个sessionid
             credit_info = self.token_manager.get_credit() if self.token_manager else None
             credit = credit_info.get('total_credit', '未知') if credit_info else '未知'
             web_id = self.token_manager.get_current_account().get('web_id', '-') if self.token_manager else '-'
@@ -929,8 +943,8 @@ class JimengVideoNode:
         """生成视频（文生视频方法）"""
         try:
             # 打印当前账号状态
-            current_account_number = self.token_manager.current_account_index + 1
-            logger.info(f"[JimengVideoNode] 开始生成视频任务，使用账号{current_account_number}")
+            current_account_number = 1  # 固定为1，因为只支持单个sessionid
+            logger.info(f"[JimengVideoNode] 开始生成视频任务")
             
             # 获取当前账号信息
             account = self.token_manager.get_current_account()
@@ -945,14 +959,14 @@ class JimengVideoNode:
                 return False, "获取积分信息失败"
                 
             required_credit = 20 if model == "p2.0p" else 5
-            logger.info(f"[JimengVideoNode] 账号{current_account_number}当前积分: {credit_info['total_credit']}, 需要积分: {required_credit}")
+            logger.info(f"[JimengVideoNode] 当前积分: {credit_info['total_credit']}, 需要积分: {required_credit}")
             
             if credit_info['total_credit'] < required_credit:
-                error_msg = f"账号{current_account_number}积分不足，当前积分: {credit_info['total_credit']}, 需要积分: {required_credit}"
+                error_msg = f"积分不足，当前积分: {credit_info['total_credit']}, 需要积分: {required_credit}"
                 logger.error(f"[JimengVideoNode] {error_msg}")
                 return False, error_msg
                 
-            logger.info(f"[JimengVideoNode] 使用账号{current_account_number}生成视频，当前积分：{credit_info['total_credit']}")
+            logger.info(f"[JimengVideoNode] 生成视频，当前积分：{credit_info['total_credit']}")
             
             # 生成唯一的submit_id
             submit_id = str(uuid.uuid4())
@@ -1151,12 +1165,12 @@ class JimengVideoNode:
         """检查文生视频生成状态"""
         try:
             # 获取当前账号信息
-            current_account_number = self.token_manager.current_account_index + 1
+            current_account_number = 1  # 固定为1，因为只支持单个sessionid
             account = self.token_manager.get_current_account()
             if not account:
                 return False, "获取当前账号信息失败"
                 
-            logger.info(f"[JimengVideoNode] 使用账号{current_account_number}检查视频状态")
+            logger.info(f"[JimengVideoNode] 检查视频状态")
             
             # 准备请求参数
             url = "https://jimeng.jianying.com/mweb/v1/mget_generate_task"

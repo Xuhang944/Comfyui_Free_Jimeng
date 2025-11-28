@@ -73,15 +73,6 @@ class JimengHDEnhancerNode:
             logger.error(f"[JimengHDNode] 配置文件加载失败: {e}")
             return {}
 
-    def _is_configured(self) -> bool:
-        """
-        检查配置是否包含至少一个有效的sessionid。
-        """
-        accounts = self.config.get("accounts", [])
-        if not isinstance(accounts, list) or not accounts:
-            return False
-        return any(acc.get("sessionid") for acc in accounts)
-
     def _initialize_components(self):
         """
         基于加载的配置初始化TokenManager和ApiClient。
@@ -102,6 +93,7 @@ class JimengHDEnhancerNode:
             "required": {
                 "history_id": ("STRING", {"default": "", "tooltip": "从上游即梦AI生图节点连接history_id输出"}),
                 "image_index": (["1", "2", "3", "4"], {"default": "1", "tooltip": "选择要高清化的图片序号"}),
+                "sessionid": ("STRING", {"multiline": False, "default": "", "placeholder": "请输入即梦AI的sessionid"}),
             }
         }
     
@@ -791,25 +783,43 @@ class JimengHDEnhancerNode:
             logger.error(f"[JimengHDNode] 下载或处理图片失败 {url}: {e}")
             return None
 
-    def enhance_image(self, history_id: str, image_index: int) -> Tuple[torch.Tensor, str, str]:
+    def enhance_image(self, history_id: str, image_index: int, sessionid: str) -> Tuple[torch.Tensor, str, str]:
         """
         主执行函数：对指定序号的图片进行高清化处理。
         
         Args:
             history_id: 历史记录ID字符串
             image_index: 要高清化的图片序号(1-4)
+            sessionid: 直接输入的sessionid，留空则使用配置文件中的账号
+            account: 选择的账号描述
             
         Returns:
             Tuple[torch.Tensor, str, str]: (高清化后的图片, 处理信息, 高清化后的图片URL)
         """
         try:
-            # --- 1. 通用检查 ---
+            # --- 1. 动态初始化组件 ---
+            # 清理前后空格
+            sessionid = sessionid.strip()
+            
+            # 检查sessionid是否为空
+            if not sessionid:
+                return self._create_error_result("sessionid不能为空，请输入有效的sessionid。")
+            
+            # 重新初始化TokenManager和ApiClient，支持动态sessionid
+            try:
+                self.token_manager = TokenManager(self.config, sessionid=sessionid)
+                self.api_client = ApiClient(self.token_manager, self.config)
+                logger.info(f"[JimengHDNode] 已动态初始化核心组件")
+            except Exception as e:
+                return self._create_error_result(f"动态初始化核心组件失败: {e}")
+            
+            # --- 2. 通用检查 ---
             if not self.token_manager or not self.api_client:
                 return self._create_error_result("插件未正确初始化，请检查后台日志。")
-            if not self._is_configured():
-                return self._create_error_result("插件未配置，请在 config.json 中至少填入一个账号的 sessionid。")
+            
             if not history_id or not history_id.strip():
                 return self._create_error_result("历史记录ID不能为空。")
+            
             # 将字符串转换为整数
             try:
                 image_index_int = int(image_index)
@@ -819,7 +829,9 @@ class JimengHDEnhancerNode:
             if image_index_int < 1 or image_index_int > 4:
                 return self._create_error_result("图片序号应在1-4之间。")
 
-            # --- 2. 获取历史记录ID ---
+            logger.info(f"[JimengHDNode] 使用直接输入的sessionid")
+
+            # --- 3. 获取历史记录ID ---
             target_history_id = history_id.strip()
             logger.info(f"[JimengHDNode] 使用history_id: {target_history_id}")
             logger.info(f"[JimengHDNode] 选择第{image_index_int}张图片进行高清化")
