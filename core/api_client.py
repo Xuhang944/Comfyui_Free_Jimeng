@@ -461,6 +461,11 @@ class ApiClient:
             "20": "2.0",
             "21": "2.1",
             "20p": "2.0p",
+            "30": "3.0",
+            "31": "3.1",
+            "40": "4.0",
+            "41": "4.1",
+            "45": "4.5",
             "xlpro": "xl",
             "xl": "xl"
         }
@@ -810,10 +815,8 @@ class ApiClient:
             models = self.config.get("params", {}).get("models", {})
             model_info = models.get(model, {})
             
-            # 默认使用4.0模型
-            model_req_key = "high_aes_general_v40"
-            if model == "4.0":
-                model_req_key = model_info.get("model_req_key", "high_aes_general_v40")
+            # 从模型配置中获取模型请求key
+            model_req_key = model_info.get("model_req_key", "high_aes_general_v40")
             
             # 准备请求参数
             submit_id = str(uuid.uuid4())
